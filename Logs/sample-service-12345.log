@@ -1,0 +1,10 @@
+2025-11-29T08:00:00Z INFO request method=GET url=/api/v1/items?id=1 status=200 requestBody={} responseBody={"id":1,"name":"item-1"}
+2025-11-29T08:00:01Z INFO request method=POST url=/api/v1/items status=201 requestBody={"name":"new"} responseBody={"id":2,"name":"new"}
+2025-11-29T08:00:02Z WARN request method=GET url=/api/v1/items?id=999 status=404 requestBody={} responseBody={"error":"not_found"}
+2025-11-29T08:00:03Z INFO request method=PUT url=/api/v1/items/2 status=200 requestBody={"name":"updated"} responseBody={"id":2,"name":"updated"}
+2025-11-29T08:00:04Z ERROR request method=DELETE url=/api/v1/items/3 status=500 requestBody={} responseBody={"error":"internal"}
+2025-11-29T08:05:00Z INFO request method=GET url=/health status=200 requestBody={} responseBody={"status":"ok"}
+2025-11-29T08:10:00Z INFO request method=POST url=/api/v1/login status=200 requestBody={"user":"alice"} responseBody={"token":"abc"}
+2025-11-29T08:15:00Z INFO request method=GET url=/api/v1/items?id=2 status=200 requestBody={} responseBody={"id":2,"name":"updated"}
+2025-11-29T08:20:00Z INFO request method=GET url=/api/v1/items?id=3 status=200 requestBody={} responseBody={"id":3,"name":"item-3"}
+2025-11-29T08:25:00Z INFO request method=POST url=/api/v1/items status=400 requestBody={"name":""} responseBody={"error":"bad_request"}
