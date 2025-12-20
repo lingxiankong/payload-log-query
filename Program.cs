@@ -1,5 +1,12 @@
 var builder = WebApplication.CreateBuilder(args);
 
+if (args.Length > 0 && (args[0] == "generate" || args[0] == "generate-data"))
+{
+    var outputDir = builder.Configuration["Local:LogDirectory"] ?? "Logs";
+    await PayloadLogQuery.Utils.LogGenerator.GenerateAsync(outputDir);
+    return;
+}
+
 // Add services to the container.
 builder.Services.AddRazorPages();
 builder.Services.AddMemoryCache();
@@ -8,16 +15,26 @@ builder.Services.Configure<PayloadLogQuery.Options.LogSourceOptions>(builder.Con
 builder.Services.Configure<PayloadLogQuery.Options.LocalLogOptions>(builder.Configuration.GetSection("Local"));
 builder.Services.Configure<PayloadLogQuery.Options.AzureBlobOptions>(builder.Configuration.GetSection("Azure"));
 
+
+
 var logSource = builder.Configuration.GetSection("LogSource").GetValue<string>("Source") ?? "Local";
 if (string.Equals(logSource, "Azure", StringComparison.OrdinalIgnoreCase))
 {
     var azOptions = builder.Configuration.GetSection("Azure").Get<PayloadLogQuery.Options.AzureBlobOptions>() ?? new();
-    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(new PayloadLogQuery.Providers.AzureBlobLogProvider(azOptions));
+
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.IDecryptionService>(new PayloadLogQuery.Services.KeyVaultDecryptionService(azOptions));
+
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(sp =>
+        new PayloadLogQuery.Providers.AzureBlobLogProvider(azOptions, sp.GetRequiredService<PayloadLogQuery.Abstractions.IDecryptionService>()));
 }
 else
 {
     var localOptions = builder.Configuration.GetSection("Local").Get<PayloadLogQuery.Options.LocalLogOptions>() ?? new();
-    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(new PayloadLogQuery.Providers.LocalLogProvider(localOptions));
+
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.IDecryptionService, PayloadLogQuery.Services.LocalDecryptionService>();
+
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(sp =>
+        new PayloadLogQuery.Providers.LocalLogProvider(localOptions, sp.GetRequiredService<PayloadLogQuery.Abstractions.IDecryptionService>()));
 }
 
 builder.Services.AddSingleton<PayloadLogQuery.Services.ServiceSessionCache>();
@@ -47,25 +64,7 @@ app.MapGet("/metadata", async (PayloadLogQuery.Services.ServiceSessionCache cach
     return Results.Json(data);
 });
 
-app.MapGet("/payload-log", async (HttpContext ctx, PayloadLogQuery.Abstractions.ILogProvider provider) =>
-{
-    var q = new PayloadLogQuery.Models.LogQuery
-    {
-        Keyword = ctx.Request.Query["q"].FirstOrDefault(),
-        StatusCode = int.TryParse(ctx.Request.Query["status"].FirstOrDefault(), out var sc) ? sc : null,
-        From = DateTimeOffset.TryParse(ctx.Request.Query["from"].FirstOrDefault(), out var from) ? from : null,
-        To = DateTimeOffset.TryParse(ctx.Request.Query["to"].FirstOrDefault(), out var to) ? to : null,
-        Page = int.TryParse(ctx.Request.Query["page"].FirstOrDefault(), out var page) && page > 0 ? page : 1,
-        PageSize = int.TryParse(ctx.Request.Query["pageSize"].FirstOrDefault(), out var ps) && ps > 0 ? Math.Min(ps, 500) : 100
-    };
 
-    var serviceName = ctx.Request.Query["serviceName"].FirstOrDefault();
-    var sessionId = ctx.Request.Query["sessionId"].FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(serviceName) || string.IsNullOrWhiteSpace(sessionId)) return Results.BadRequest("serviceName and sessionId are required");
-
-    var result = await provider.ReadAsync(serviceName, sessionId, q, ctx.RequestAborted);
-    return Results.Json(result);
-});
 
 app.MapGet("/payload-log/stream", async (HttpContext ctx, PayloadLogQuery.Abstractions.ILogProvider provider) =>
 {
@@ -75,6 +74,8 @@ app.MapGet("/payload-log/stream", async (HttpContext ctx, PayloadLogQuery.Abstra
         StatusCode = int.TryParse(ctx.Request.Query["status"].FirstOrDefault(), out var sc) ? sc : null,
         From = DateTimeOffset.TryParse(ctx.Request.Query["from"].FirstOrDefault(), out var from) ? from : null,
         To = DateTimeOffset.TryParse(ctx.Request.Query["to"].FirstOrDefault(), out var to) ? to : null,
+        Limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var limit) ? limit : null,
+        ExcludeFrom = bool.TryParse(ctx.Request.Query["excludeFrom"].FirstOrDefault(), out var exc) && exc
     };
 
     var serviceName = ctx.Request.Query["serviceName"].FirstOrDefault();

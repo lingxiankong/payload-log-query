@@ -1,149 +1,126 @@
 # Payload Log Query
 
-A simple ASP.NET Core web application that displays and queries payload logs for services running in AKS with Kong Mesh. Authentication is intentionally omitted. The app exposes:
-
-- `GET /payload-log?serviceName={serviceName}&sessionId={sessionId}` — paginated JSON results with filters
-- `GET /payload-log/stream` — Server-Sent Events (SSE) stream for progressive loading
-- `GET /metadata` — list of available `serviceName -> [sessionId]` pairs for the UI dropdowns
+A lightweight ASP.NET Core web application designed to query and stream payload logs from Local Storage or Azure Blob Storage. It features a responsive UI with real-time streaming capabilities and cursor-based pagination.
 
 ## Features
-- Local directory or Azure Blob Storage log sources (configurable)
-- Pagination (`page`, `pageSize`) and filters (keyword, time range, status code)
-- SSE streaming endpoint for progressive loading
-- Minimal UI with dropdowns and filters; timestamp in a dedicated column and all other content in a single large column
-- Caching of service/session pairs for fast UI population
+
+- **Stream-First Architecture**: Uses Server-Sent Events (SSE) to stream logs directly to the browser, ensuring low latency even for large datasets.
+- **Unified Querying**: Supports filtering by Service, Session, Time Range, Status Code, and Keywords.
+- **Cursor-Based Pagination**: Efficient "Load More" functionality using timestamp cursors (`ExcludeFrom` logic) to fetch subsequent batches without overlap.
+- **Secure Azure Integration**: Connects to Azure Blob Storage using Managed Identity (`DefaultAzureCredential`), eliminating the need for connection strings.
+- **Log Decryption**: Extensible `IDecryptionService` to handle encrypted log entries (supports Local mock and KeyVault stub).
+- **Zero-Maintenance UI**: Metadata is cached for fast loading of Service/Session lists.
 
 ## Requirements
-- .NET SDK 10.0 (e.g., `10.0.100`)
+
+- .NET SDK 8 or later
 
 ## Quick Start
-1. Build:
+
+1. **Build the project:**
    ```bash
-   dotnet build
+   dotnet build PayloadLogQuery.csproj
    ```
-2. Run:
+
+2. **Generate sample data (optional):**
+   ```bash
+   dotnet run -- generate-data
+   # Generates Logs/demoService-demoSession1.log
+   ```
+
+3. **Run the application:**
    ```bash
    dotnet run
    ```
-3. Open:
-   - Browser: `http://localhost:5037/`
-   - Default source is `Local` reading from `Logs/`
 
-A sample file is included: `Logs/sample-service-12345.log`. Select `serviceName=sample-service`, `sessionId=12345` in the UI.
+4. **Access the UI:**
+   - Open browser to `http://localhost:5037`
+   - Select `demoService` and `demoSession1` (if generated) or use your own logs in `Logs/` directory.
 
 ## Configuration
-The app uses `appsettings.json` for configuration.
 
+The application is configured via `appsettings.json` or Environment Variables.
+
+### Local Storage (Default)
 ```json
 {
   "LogSource": {
-    "Source": "Local"  // Local or Azure
+    "Source": "Local"
   },
   "Local": {
     "LogDirectory": "Logs"
-  },
-  "Azure": {
-    "ConnectionString": "",
-    "ContainerName": ""
   }
 }
 ```
 
-- Set `LogSource.Source` to `Local` to read logs from a directory.
-- Set `LogSource.Source` to `Azure` to read logs from an Azure Storage container.
-- Log file naming must follow: `{serviceName}-{sessionId}.log`.
+### Azure Blob Storage
+Uses Azure Managed Identity. Ensure the environment has `AzureBlobDataReader` access.
 
-You can also use environment variables:
-- `LogSource__Source`
-- `Local__LogDirectory`
-- `Azure__ConnectionString`
-- `Azure__ContainerName`
-
-Example (Azure):
-```bash
-export LogSource__Source=Azure
-export Azure__ConnectionString="<your-connection-string>"
-export Azure__ContainerName="<your-container>"
+```json
+{
+  "LogSource": {
+    "Source": "Azure"
+  },
+  "Azure": {
+    "StorageAccountName": "yourstorageaccount",
+    "ContainerName": "yourcontainer"
+  }
+}
 ```
 
+**Environment Variables:**
+- `LogSource__Source`: `Local` or `Azure`
+- `Azure__StorageAccountName`: Your Azure Storage Account Name
+- `Azure__ContainerName`: Blob Container Name
+
+## Streaming Implementation
+
+The core log retrieval is built on **Server-Sent Events (SSE)**.
+
+1.  **Backend**:
+    - The `ILogProvider.StreamAsync` method returns an `IAsyncEnumerable<LogEntry>`.
+    - The `/payload-log/stream` endpoint writes these entries directly to the HTTP response stream as `data: {...}` lines.
+    - This allows the server to process and send logs line-by-line without buffering the entire dataset in memory.
+
+2.  **Frontend**:
+    - Uses the browser's `EventSource` API to consume the stream.
+    - **Load More**: When the user clicks "Load More", the frontend closes the current stream and opens a new one, passing the timestamp of the last received log as the `from` parameter with `excludeFrom=true`. This ensures the stream picks up exactly where it left off.
+
 ## API Reference
-- `GET /payload-log`
-  - Query parameters:
-    - `serviceName` (string, required)
-    - `sessionId` (string, required)
-    - `q` (string, optional) — keyword
-    - `from` (ISO8601 datetime, optional)
-    - `to` (ISO8601 datetime, optional)
-    - `status` (int, optional) — HTTP status code (e.g., 200)
-    - `page` (int, default 1)
-    - `pageSize` (int, default 100, max 500)
-  - Response (JSON):
-    ```json
-    {
-      "entries": [ { "timestamp": "2025-11-29T08:00:00Z", "content": "..." } ],
-      "page": 1,
-      "pageSize": 100,
-      "hasMore": false,
-      "totalMatched": 10
-    }
-    ```
 
-- `GET /payload-log/stream`
-  - Same query parameters as `/payload-log` except `page` and `pageSize` are ignored.
-  - Response: `text/event-stream` messages with JSON payloads:
-    ```text
-    data: {"timestamp":"2025-11-29T08:00:00Z","content":"..."}
-    ```
+### `GET /metadata`
+Returns a JSON object mapping Service Names to available Session IDs.
+```json
+{
+  "serviceA": ["session1", "session2"],
+  "demoService": ["demoSession1"]
+}
+```
 
-- `GET /metadata`
-  - Response (JSON): `{ "serviceA": ["sess1","sess2"], "serviceB": ["sess9"] }`
+### `GET /payload-log/stream`
+Streams log entries matching the criteria.
 
-## Frontend UI
-- Page: `Index` at `http://localhost:5037/`
-- Controls:
-  - `Service` dropdown populated from `/metadata`
-  - `Session` dropdown based on selected service
-  - `Keyword`, `Status Code`, `From`, `To`, `Page`, `Page Size`
-  - `Query` button fetches paged JSON results
-  - `Stream` button opens SSE stream for progressive loading
-- Table:
-  - `Timestamp` column (ISO8601 or parsed from line)
-  - `Content` column containing the full raw log line
+**Parameters:**
+- `serviceName` (Required): Name of the service.
+- `sessionId` (Required): Session identifier.
+- `q` (Optional): Keyword search within the log content.
+- `status` (Optional): Filter by HTTP Status Code (e.g., 200, 404).
+- `from` (Optional): Start timestamp (ISO 8601).
+- `to` (Optional): End timestamp (ISO 8601).
+- `limit` (Optional): Max number of records to stream (default 100).
+- `excludeFrom` (Optional): If `true`, the `from` timestamp is exclusive (`>`). Used for pagination.
 
-## Log Format Assumptions
-- Timestamp is parsed from the beginning of each line if present (e.g., `2025-11-29T08:00:00Z` or similar ISO8601 variants).
-- Status code is extracted via heuristics:
-  - `status=NNN`, `statusCode=NNN`, or JSON-like `"status": NNN`.
-- Lines without a parseable timestamp are not time-filtered but still appear when other filters match.
+**Response Structure (SSE)**:
+```text
+data: {"timestamp":"2025-12-20T10:00:01Z", "content":"..."}
 
-## Pagination & Streaming
-- Pagination returns a slice of filtered lines with `hasMore` and `totalMatched` for UX.
-- SSE streaming yields matching lines progressively; use for large logs or a “live” feel. Note SSE is unidirectional; ensure intermediaries support streaming.
+data: {"timestamp":"2025-12-20T10:00:02Z", "content":"..."}
+```
 
-## Sample Data
-A sample local file `Logs/sample-service-12345.log` is included with request/response entries containing timestamp, method, URL, status code, and bodies. Use it for testing the UI and API.
+## Project Structure
 
-## Azure Setup Notes
-- Ensure the Azure Storage connection string has read access to your container.
-- Blob names should follow `{serviceName}-{sessionId}.log`.
-- The app only performs reads; no writes to storage.
-
-## Deployment Notes
-- Designed for AKS + Kong Mesh where authentication is handled externally or not required.
-- Consider setting environment variables via Kubernetes `Deployment` manifests.
-- If running behind proxies or ingress, confirm SSE (`/payload-log/stream`) is supported.
-
-## Troubleshooting
-- Service/session list empty:
-  - Check source config and that files exist (Local) or blobs exist (Azure).
-- No results when filtering by time:
-  - Ensure logs include parseable timestamps at the line start.
-- Azure errors:
-  - Validate `Azure__ConnectionString` and `Azure__ContainerName`.
-
-## Future Enhancements
-- Server-side chunked paging for very large logs
-- Tail mode for actively appended logs
-- Custom parsers per service to extract structured fields
-- Download raw log file and export filtered results
-
+- **`Abstractions/`**: Core interfaces (`ILogProvider`, `IDecryptionService`).
+- **`Providers/`**: Implementations for Local file system and Azure Blob Storage.
+- **`Services/`**: Decryption logic (`LocalDecryptionService`, `KeyVaultDecryptionService`) and caching.
+- **`Middleware/`**: (None currently, logic is in `Program.cs` minimal APIs).
+- **`wwwroot/js/logs.js`**: Frontend logic for Metadata loading, EventSource handling, and infinite scroll simulation via "Load More".

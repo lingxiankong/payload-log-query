@@ -5,14 +5,11 @@
   const statusInput = document.getElementById('statusInput');
   const fromInput = document.getElementById('fromInput');
   const toInput = document.getElementById('toInput');
-  const pageInput = document.getElementById('pageInput');
-  const pageSizeInput = document.getElementById('pageSizeInput');
+
+  const limitInput = document.getElementById('limitInput');
   const queryBtn = document.getElementById('queryBtn');
-  const streamBtn = document.getElementById('streamBtn');
   const logBody = document.getElementById('logTableBody');
-  const pageInfo = document.getElementById('pageInfo');
-  const prevBtn = document.getElementById('prevBtn');
-  const nextBtn = document.getElementById('nextBtn');
+  const loadMoreBtn = document.getElementById('loadMoreBtn');
 
   let es;
 
@@ -27,17 +24,35 @@
   }
 
   async function loadMetadata() {
-    const res = await fetch('/metadata');
-    const data = await res.json();
-    serviceSelect.innerHTML = '';
-    for (const svc of Object.keys(data)) {
-      const opt = document.createElement('option');
-      opt.value = svc; opt.textContent = svc;
-      serviceSelect.appendChild(opt);
+    try {
+      const res = await fetch('/metadata?_' + Date.now());
+      if (!res.ok) throw new Error('Failed to load metadata');
+      const data = await res.json();
+
+      serviceSelect.innerHTML = '';
+      const services = Object.keys(data);
+      if (services.length === 0) {
+          const opt = document.createElement('option');
+          opt.textContent = "No logs found";
+          serviceSelect.appendChild(opt);
+          sessionSelect.innerHTML = '';
+          return;
+      }
+
+      for (const svc of services) {
+        const opt = document.createElement('option');
+        opt.value = svc; opt.textContent = svc;
+        serviceSelect.appendChild(opt);
+      }
+
+      serviceSelect.selectedIndex = 0;
+      setSessions(serviceSelect.value, data);
+
+      serviceSelect.addEventListener('change', () => setSessions(serviceSelect.value, data));
+    } catch (err) {
+      console.error(err);
+      alert('Error loading metadata: ' + err.message);
     }
-    const first = serviceSelect.value;
-    setSessions(first, data);
-    serviceSelect.addEventListener('change', () => setSessions(serviceSelect.value, data));
   }
 
   function addRow(entry) {
@@ -54,67 +69,80 @@
     logBody.innerHTML = '';
   }
 
-  function buildQuery() {
-    const params = new URLSearchParams();
-    params.set('serviceName', serviceSelect.value);
-    params.set('sessionId', sessionSelect.value);
-    if (keywordInput.value) params.set('q', keywordInput.value);
-    if (statusInput.value) params.set('status', statusInput.value);
-    if (fromInput.value) params.set('from', new Date(fromInput.value).toISOString());
-    if (toInput.value) params.set('to', new Date(toInput.value).toISOString());
-    params.set('page', pageInput.value || '1');
-    params.set('pageSize', pageSizeInput.value || '100');
-    return params.toString();
-  }
+  let lastTimestamp = null;
 
   async function query() {
-    if (es) { es.close(); es = null; }
     clearRows();
-    const res = await fetch(`/payload-log?${buildQuery()}`);
-    const data = await res.json();
-    for (const e of data.entries || []) {
-      addRow({ timestamp: e.timestamp, content: e.content });
-    }
-    const page = typeof data.page === 'number' ? data.page : parseInt(pageInput.value || '1');
-    const pageSize = typeof data.pageSize === 'number' ? data.pageSize : parseInt(pageSizeInput.value || '100');
-    const total = (typeof data.totalMatched === 'number') ? data.totalMatched : ((Array.isArray(data.entries) ? data.entries.length : 0));
-    const totalPages = Math.max(1, Math.ceil((total || 0) / pageSize) || 1);
-    pageInfo.textContent = `Page ${page}/${totalPages} | PageSize ${pageSize} | Total ${total}`;
+    if (es) { es.close(); es = null; }
 
-    prevBtn.disabled = page <= 1 || totalPages <= 1;
-    nextBtn.disabled = page >= totalPages || totalPages <= 1;
+    // Check required fields
+    if (!serviceSelect.value || !sessionSelect.value) {
+        alert('Please select Service and Session');
+        return;
+    }
+
+    startStream(null);
   }
 
-  function stream() {
-    clearRows();
-    if (es) { es.close(); es = null; }
-    es = new EventSource(`/payload-log/stream?${buildQuery()}`);
-    prevBtn.disabled = true;
-    nextBtn.disabled = true;
-    es.onmessage = (ev) => {
-      try {
-        const obj = JSON.parse(ev.data);
-        addRow(obj);
-      } catch {}
-    };
-    es.onerror = () => {
-      if (es) es.close();
-      es = null;
-    };
+  function loadMore() {
+      if (!lastTimestamp) return;
+      // Pass true to excludeFrom to avoid duplication of the boundary item
+      startStream(lastTimestamp, true);
+  }
+
+  function startStream(fromCursor, excludeFrom) {
+      if (es) { es.close(); es = null; }
+
+      const params = new URLSearchParams();
+      params.set('serviceName', serviceSelect.value);
+      params.set('sessionId', sessionSelect.value);
+      if (keywordInput.value) params.set('q', keywordInput.value);
+      if (statusInput.value) params.set('status', statusInput.value);
+
+      // If loading more, override 'From' with cursor.
+      // Else use User Input, appending 'Z' to treat it as UTC literal to match log time.
+      if (fromCursor) {
+          params.set('from', fromCursor);
+          if (excludeFrom) {
+            params.set('excludeFrom', 'true');
+          }
+      } else if (fromInput.value) {
+          params.set('from', fromInput.value + 'Z');
+      }
+
+      if (toInput.value) params.set('to', toInput.value + 'Z');
+
+      // Map Limit
+      const limit = limitInput.value || '100';
+      params.set('limit', limit);
+
+      es = new EventSource(`/payload-log/stream?${params.toString()}`);
+
+      loadMoreBtn.style.display = 'none';
+      loadMoreBtn.disabled = true;
+
+      es.onmessage = (ev) => {
+        try {
+          const obj = JSON.parse(ev.data);
+          addRow(obj);
+          if (obj.timestamp) lastTimestamp = obj.timestamp;
+        } catch {}
+      };
+
+      es.onerror = () => {
+        if (es) es.close();
+        es = null;
+        // Stream ended (or failed). Show Load More button if we have data.
+        if (logBody.children.length > 0) {
+            loadMoreBtn.style.display = 'block';
+            loadMoreBtn.disabled = false;
+            loadMoreBtn.textContent = "Load More";
+        }
+      };
   }
 
   queryBtn.addEventListener('click', query);
-  streamBtn.addEventListener('click', stream);
-  prevBtn.addEventListener('click', () => {
-    const p = Math.max(1, parseInt(pageInput.value || '1') - 1);
-    pageInput.value = String(p);
-    query();
-  });
-  nextBtn.addEventListener('click', () => {
-    const p = parseInt(pageInput.value || '1') + 1;
-    pageInput.value = String(p);
-    query();
-  });
+  loadMoreBtn.addEventListener('click', loadMore);
 
-  loadMetadata().then(query);
+  loadMetadata();
 })();

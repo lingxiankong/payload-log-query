@@ -8,40 +8,16 @@ namespace PayloadLogQuery.Providers;
 public class LocalLogProvider : ILogProvider
 {
     private readonly LocalLogOptions _options;
+    private readonly IDecryptionService _decryptionService;
 
-    public LocalLogProvider(LocalLogOptions options)
+    public LocalLogProvider(LocalLogOptions options, IDecryptionService decryptionService)
     {
         _options = options;
+        _decryptionService = decryptionService;
         Directory.CreateDirectory(_options.LogDirectory);
     }
 
-    public async Task<LogReadResult> ReadAsync(string serviceName, string sessionId, LogQuery query, CancellationToken ct = default)
-    {
-        var path = GetPath(serviceName, sessionId);
-        if (!File.Exists(path))
-        {
-            return new LogReadResult { Entries = Array.Empty<LogEntry>(), Page = query.Page, PageSize = query.PageSize, HasMore = false, TotalMatched = 0 };
-        }
 
-        var filtered = new List<LogEntry>();
-        await foreach (var entry in EnumerateEntries(path, query, ct))
-        {
-            filtered.Add(entry);
-        }
-
-        var skip = Math.Max(0, (query.Page - 1) * query.PageSize);
-        var pageEntries = filtered.Skip(skip).Take(query.PageSize).ToList();
-        var hasMore = skip + pageEntries.Count < filtered.Count;
-
-        return new LogReadResult
-        {
-            Entries = pageEntries,
-            Page = query.Page,
-            PageSize = query.PageSize,
-            HasMore = hasMore,
-            TotalMatched = filtered.Count
-        };
-    }
 
     public async IAsyncEnumerable<LogEntry> StreamAsync(string serviceName, string sessionId, LogQuery query, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -87,7 +63,7 @@ public class LocalLogProvider : ILogProvider
         return (service, session);
     }
 
-    private static async IAsyncEnumerable<LogEntry> EnumerateEntries(string path, LogQuery query, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    private async IAsyncEnumerable<LogEntry> EnumerateEntries(string path, LogQuery query, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         await using var fs = File.OpenRead(path);
         using var sr = new StreamReader(fs);
@@ -95,8 +71,22 @@ public class LocalLogProvider : ILogProvider
         {
             if (ct.IsCancellationRequested) yield break;
             var line = await sr.ReadLineAsync() ?? string.Empty;
+
+            // Decrypt logic
+            line = await TryDecryptAsync(line, ct);
+
             var ts = ExtractTimestamp(line);
-            if (query.From.HasValue && ts.HasValue && ts.Value < query.From.Value) continue;
+            if (query.From.HasValue && ts.HasValue)
+            {
+                if (query.ExcludeFrom)
+                {
+                    if (ts.Value <= query.From.Value) continue;
+                }
+                else
+                {
+                    if (ts.Value < query.From.Value) continue;
+                }
+            }
             if (query.To.HasValue && ts.HasValue && ts.Value > query.To.Value) continue;
             if (query.Keyword is not null && !line.Contains(query.Keyword, StringComparison.OrdinalIgnoreCase)) continue;
             if (query.StatusCode.HasValue)
@@ -104,8 +94,40 @@ public class LocalLogProvider : ILogProvider
                 var code = ExtractStatusCode(line);
                 if (code != query.StatusCode.Value) continue;
             }
+            if (query.Limit.HasValue && query.Limit.Value <= 0) yield break;
+
             yield return new LogEntry { Timestamp = ts, Content = line };
+
+            if (query.Limit.HasValue) query.Limit--;
         }
+    }
+
+    private async ValueTask<string> TryDecryptAsync(string line, CancellationToken ct)
+    {
+        // Format: v{version}:{content}
+        if (string.IsNullOrWhiteSpace(line)) return line;
+
+        // Quick check if it looks encrypted
+        if (line.StartsWith('v'))
+        {
+            var idx = line.IndexOf(':');
+            if (idx > 1)
+            {
+                var versionPart = line.Substring(1, idx - 1); // Extract version
+                // naive check if version is alphanumeric/numeric. Let's assume it is a valid version if we find the colon.
+                // call decrypt
+                try
+                {
+                   return await _decryptionService.DecryptAsync(versionPart, line.Substring(idx + 1), ct);
+                }
+                catch
+                {
+                    // Fallback or log error? For now, return original if decryption fails or not actually encrypted
+                    return line;
+                }
+            }
+        }
+        return line;
     }
 
     private static DateTimeOffset? ExtractTimestamp(string line)

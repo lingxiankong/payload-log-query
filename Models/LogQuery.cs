@@ -6,7 +6,8 @@ public class LogQuery
     public DateTimeOffset? From { get; set; }
     public DateTimeOffset? To { get; set; }
     public int? StatusCode { get; set; }
-    public int Page { get; set; } = 1;
-    public int PageSize { get; set; } = 100;
+
+    public int? Limit { get; set; }
+    public bool ExcludeFrom { get; set; }
 }
 
