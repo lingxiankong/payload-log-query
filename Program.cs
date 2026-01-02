@@ -1,5 +1,9 @@
+using Microsoft.Extensions.Azure;
+using Microsoft.Extensions.Options;
+
 var builder = WebApplication.CreateBuilder(args);
 
+// Add initialization generation check
 if (args.Length > 0 && (args[0] == "generate" || args[0] == "generate-data"))
 {
     var outputDir = builder.Configuration["Local:LogDirectory"] ?? "Logs";
@@ -11,30 +15,48 @@ if (args.Length > 0 && (args[0] == "generate" || args[0] == "generate-data"))
 builder.Services.AddRazorPages();
 builder.Services.AddMemoryCache();
 
-builder.Services.Configure<PayloadLogQuery.Options.LogSourceOptions>(builder.Configuration.GetSection("LogSource"));
-builder.Services.Configure<PayloadLogQuery.Options.LocalLogOptions>(builder.Configuration.GetSection("Local"));
-builder.Services.Configure<PayloadLogQuery.Options.AzureBlobOptions>(builder.Configuration.GetSection("Azure"));
+// Options pattern
+builder.Services.AddOptions<PayloadLogQuery.Options.LogSourceOptions>()
+    .BindConfiguration("LogSource");
+builder.Services.AddOptions<PayloadLogQuery.Options.LocalLogOptions>()
+    .BindConfiguration("Local");
+builder.Services.AddOptions<PayloadLogQuery.Options.AzureBlobOptions>()
+    .BindConfiguration("Azure");
 
+// Register Azure Clients
+builder.Services.AddAzureClients(clientBuilder =>
+{
+    // Register BlobServiceClient
+    // We get the options manually here to check if we have a connection string or account name
+    // But standard pattern is usually just AddBlobServiceClient(connStr) or AddBlobServiceClient(uri).
+    // Let's rely on the configuration section or manually configure.
+
+    // We'll trust the custom provider to pick up the options, BUT looking at AzureBlobLogProvider,
+    // it was creating its own BlobServiceClient.
+    // Best practice: Register BlobServiceClient here.
+
+    clientBuilder.AddBlobServiceClient(builder.Configuration.GetSection("Azure:StorageAccountName").Value is string accountName
+        ? new Uri($"https://{accountName}.blob.core.windows.net")
+        : new Uri("https://unknown.blob.core.windows.net"));
+
+    // Use DefaultAzureCredential by default for the clientBuilder
+    clientBuilder.UseCredential(new Azure.Identity.DefaultAzureCredential());
+});
 
 
 var logSource = builder.Configuration.GetSection("LogSource").GetValue<string>("Source") ?? "Local";
+
 if (string.Equals(logSource, "Azure", StringComparison.OrdinalIgnoreCase))
 {
-    var azOptions = builder.Configuration.GetSection("Azure").Get<PayloadLogQuery.Options.AzureBlobOptions>() ?? new();
-
-    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.IDecryptionService>(new PayloadLogQuery.Services.KeyVaultDecryptionService(azOptions));
-
-    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(sp =>
-        new PayloadLogQuery.Providers.AzureBlobLogProvider(azOptions, sp.GetRequiredService<PayloadLogQuery.Abstractions.IDecryptionService>()));
+    // Register the implementation for Azure
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.IDecryptionService, PayloadLogQuery.Services.KeyVaultDecryptionService>();
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider, PayloadLogQuery.Providers.AzureBlobLogProvider>();
 }
 else
 {
-    var localOptions = builder.Configuration.GetSection("Local").Get<PayloadLogQuery.Options.LocalLogOptions>() ?? new();
-
+    // Register the implementation for Local
     builder.Services.AddSingleton<PayloadLogQuery.Abstractions.IDecryptionService, PayloadLogQuery.Services.LocalDecryptionService>();
-
-    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider>(sp =>
-        new PayloadLogQuery.Providers.LocalLogProvider(localOptions, sp.GetRequiredService<PayloadLogQuery.Abstractions.IDecryptionService>()));
+    builder.Services.AddSingleton<PayloadLogQuery.Abstractions.ILogProvider, PayloadLogQuery.Providers.LocalLogProvider>();
 }
 
 builder.Services.AddSingleton<PayloadLogQuery.Services.ServiceSessionCache>();

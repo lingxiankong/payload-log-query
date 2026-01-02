@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using PayloadLogQuery.Abstractions;
 using PayloadLogQuery.Models;
 using PayloadLogQuery.Options;
+using Microsoft.Extensions.Options;
 
 namespace PayloadLogQuery.Providers;
 
@@ -13,26 +14,20 @@ public class AzureBlobLogProvider : ILogProvider
     private readonly BlobContainerClient _container;
     private readonly IDecryptionService _decryptionService;
 
-    public AzureBlobLogProvider(AzureBlobOptions options, IDecryptionService decryptionService)
+    // Use BlobServiceClient injected by DI
+    public AzureBlobLogProvider(
+        IOptions<AzureBlobOptions> options,
+        BlobServiceClient blobServiceClient,
+        IDecryptionService decryptionService)
     {
-        _options = options;
+        _options = options.Value;
         _decryptionService = decryptionService;
 
-        if (!string.IsNullOrWhiteSpace(_options.StorageAccountName))
-        {
-            var serviceUri = new Uri($"https://{_options.StorageAccountName}.blob.core.windows.net");
-            var serviceClient = new BlobServiceClient(serviceUri, new Azure.Identity.DefaultAzureCredential());
-            _container = serviceClient.GetBlobContainerClient(_options.ContainerName);
-        }
-        else
-        {
-            throw new InvalidOperationException("Azure StorageAccountName is required");
-        }
+        if (string.IsNullOrWhiteSpace(_options.ContainerName))
+            throw new InvalidOperationException("Azure container name is required");
 
-        if (string.IsNullOrWhiteSpace(_options.ContainerName)) throw new InvalidOperationException("Azure container name is required");
+        _container = blobServiceClient.GetBlobContainerClient(_options.ContainerName);
     }
-
-
 
     public async IAsyncEnumerable<LogEntry> StreamAsync(string serviceName, string sessionId, LogQuery query, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -48,6 +43,9 @@ public class AzureBlobLogProvider : ILogProvider
     public async Task<IReadOnlyDictionary<string, List<string>>> ListServiceSessionsAsync(CancellationToken ct = default)
     {
         var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        // Ensure container exists logic or handle if it doesn't?
+        // For query tool, usually we expect it works.
+
         await foreach (BlobItem item in _container.GetBlobsAsync(prefix: null, cancellationToken: ct))
         {
             if (!item.Name.EndsWith(".log", StringComparison.OrdinalIgnoreCase)) continue;
@@ -75,8 +73,8 @@ public class AzureBlobLogProvider : ILogProvider
             if (ct.IsCancellationRequested) yield break;
             var line = await sr.ReadLineAsync() ?? string.Empty;
 
-            // Decrypt logic
-            line = await TryDecryptAsync(line, ct);
+            // Decrypt logic: pass the whole line to the service
+            line = await _decryptionService.DecryptAsync(line, ct);
 
             var ts = ExtractTimestamp(line);
             if (query.From.HasValue && ts.HasValue)
@@ -103,29 +101,6 @@ public class AzureBlobLogProvider : ILogProvider
 
             if (query.Limit.HasValue) query.Limit--;
         }
-    }
-
-    private async ValueTask<string> TryDecryptAsync(string line, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(line)) return line;
-
-        if (line.StartsWith('v'))
-        {
-            var idx = line.IndexOf(':');
-            if (idx > 1)
-            {
-                var versionPart = line.Substring(1, idx - 1);
-                try
-                {
-                   return await _decryptionService.DecryptAsync(versionPart, line.Substring(idx + 1), ct);
-                }
-                catch
-                {
-                    return line;
-                }
-            }
-        }
-        return line;
     }
 
     private static DateTimeOffset? ExtractTimestamp(string line)

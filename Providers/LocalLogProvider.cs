@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using PayloadLogQuery.Abstractions;
 using PayloadLogQuery.Models;
 using PayloadLogQuery.Options;
+using Microsoft.Extensions.Options;
 
 namespace PayloadLogQuery.Providers;
 
@@ -10,9 +11,9 @@ public class LocalLogProvider : ILogProvider
     private readonly LocalLogOptions _options;
     private readonly IDecryptionService _decryptionService;
 
-    public LocalLogProvider(LocalLogOptions options, IDecryptionService decryptionService)
+    public LocalLogProvider(IOptions<LocalLogOptions> options, IDecryptionService decryptionService)
     {
-        _options = options;
+        _options = options.Value;
         _decryptionService = decryptionService;
         Directory.CreateDirectory(_options.LogDirectory);
     }
@@ -73,7 +74,8 @@ public class LocalLogProvider : ILogProvider
             var line = await sr.ReadLineAsync() ?? string.Empty;
 
             // Decrypt logic
-            line = await TryDecryptAsync(line, ct);
+            // Decrypt logic
+            line = await _decryptionService.DecryptAsync(line, ct);
 
             var ts = ExtractTimestamp(line);
             if (query.From.HasValue && ts.HasValue)
@@ -102,33 +104,7 @@ public class LocalLogProvider : ILogProvider
         }
     }
 
-    private async ValueTask<string> TryDecryptAsync(string line, CancellationToken ct)
-    {
-        // Format: v{version}:{content}
-        if (string.IsNullOrWhiteSpace(line)) return line;
 
-        // Quick check if it looks encrypted
-        if (line.StartsWith('v'))
-        {
-            var idx = line.IndexOf(':');
-            if (idx > 1)
-            {
-                var versionPart = line.Substring(1, idx - 1); // Extract version
-                // naive check if version is alphanumeric/numeric. Let's assume it is a valid version if we find the colon.
-                // call decrypt
-                try
-                {
-                   return await _decryptionService.DecryptAsync(versionPart, line.Substring(idx + 1), ct);
-                }
-                catch
-                {
-                    // Fallback or log error? For now, return original if decryption fails or not actually encrypted
-                    return line;
-                }
-            }
-        }
-        return line;
-    }
 
     private static DateTimeOffset? ExtractTimestamp(string line)
     {
