@@ -58,7 +58,7 @@ Query logs from Azure Blob Storage Container.
    dotnet run
    ```
 4. **Access UI:**
-   Open `http://localhost:5037` (or similar) in your browser.
+   Open `http://localhost:5038` (or similar) in your browser.
 
 ## Development
 
