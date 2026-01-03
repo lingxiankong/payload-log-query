@@ -94,8 +94,8 @@ app.MapGet("/payload-log/stream", async (HttpContext ctx, PayloadLogQuery.Abstra
     {
         Keyword = ctx.Request.Query["q"].FirstOrDefault(),
         StatusCode = int.TryParse(ctx.Request.Query["status"].FirstOrDefault(), out var sc) ? sc : null,
-        From = DateTimeOffset.TryParse(ctx.Request.Query["from"].FirstOrDefault(), out var from) ? from : null,
-        To = DateTimeOffset.TryParse(ctx.Request.Query["to"].FirstOrDefault(), out var to) ? to : null,
+        From = DateTimeOffset.TryParse(ctx.Request.Query["from"].FirstOrDefault(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var from) ? from : null,
+        To = DateTimeOffset.TryParse(ctx.Request.Query["to"].FirstOrDefault(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var to) ? to : null,
         Limit = int.TryParse(ctx.Request.Query["limit"].FirstOrDefault(), out var limit) ? limit : null,
         ExcludeFrom = bool.TryParse(ctx.Request.Query["excludeFrom"].FirstOrDefault(), out var exc) && exc
     };

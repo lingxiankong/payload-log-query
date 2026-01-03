@@ -111,7 +111,7 @@ public class LocalLogProvider : ILogProvider
         var match = Regex.Match(line, "^(?:\\[)?(?<ts>\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?)(?:\\])?");
         if (match.Success)
         {
-            if (DateTimeOffset.TryParse(match.Groups["ts"].Value, out var dto)) return dto;
+            if (DateTimeOffset.TryParse(match.Groups["ts"].Value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var dto)) return dto;
         }
         return null;
     }
